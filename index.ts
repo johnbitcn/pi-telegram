@@ -130,7 +130,12 @@ interface PendingTelegramTurn {
 	historyText: string;
 }
 
-type ActiveTelegramTurn = PendingTelegramTurn;
+interface ActiveTelegramTurn {
+	chatId: number;
+	replyToMessageId?: number;
+	queuedAttachments: QueuedAttachment[];
+	local?: boolean;
+}
 
 interface QueuedAttachment {
 	path: string;
@@ -294,7 +299,9 @@ export default function (pi: ExtensionAPI) {
 	let currentAbort: (() => void) | undefined;
 	let preserveQueuedTurnsAsHistory = false;
 	let setupInProgress = false;
+	let syncEnabled = false;
 	let previewState: TelegramPreviewState | undefined;
+	let previewFlushPromise: Promise<void> | undefined;
 	let draftSupport: "unknown" | "supported" | "unsupported" = "unknown";
 	let nextDraftId = 0;
 	const mediaGroups = new Map<string, TelegramMediaGroupState>();
@@ -306,7 +313,7 @@ export default function (pi: ExtensionAPI) {
 
 	function updateStatus(ctx: ExtensionContext, error?: string): void {
 		const theme = ctx.ui.theme;
-		const label = theme.fg("accent", "telegram");
+		const label = theme.fg("accent", syncEnabled ? "telegram sync" : "telegram");
 		if (error) {
 			ctx.ui.setStatus("telegram", `${label} ${theme.fg("error", "error")} ${theme.fg("muted", error)}`);
 			return;
@@ -420,6 +427,7 @@ export default function (pi: ExtensionAPI) {
 
 	function getMessageText(message: AgentMessage): string {
 		const value = message as unknown as Record<string, unknown>;
+		if (typeof value.content === "string") return value.content.trim();
 		const content = Array.isArray(value.content) ? value.content : [];
 		return content
 			.filter((block): block is { type: string; text?: string } => typeof block === "object" && block !== null && "type" in block)
@@ -437,6 +445,7 @@ export default function (pi: ExtensionAPI) {
 			state.flushTimer = undefined;
 		}
 		previewState = undefined;
+		await previewFlushPromise;
 		if (state.mode === "draft" && state.draftId !== undefined) {
 			try {
 				await callTelegram("sendMessageDraft", { chat_id: chatId, draft_id: state.draftId, text: "" });
@@ -480,32 +489,47 @@ export default function (pi: ExtensionAPI) {
 		state.lastSentText = truncated;
 	}
 
-	function schedulePreviewFlush(chatId: number): void {
-		if (!previewState || previewState.flushTimer) return;
+	function schedulePreviewFlush(chatId: number, ctx: ExtensionContext): void {
+		if (!previewState || previewState.flushTimer || previewFlushPromise) return;
 		previewState.flushTimer = setTimeout(() => {
-			void flushPreview(chatId);
+			previewFlushPromise = flushPreview(chatId).catch((error) => {
+				updateStatus(ctx, `preview failed: ${error instanceof Error ? error.message : String(error)}`);
+			}).finally(() => {
+				previewFlushPromise = undefined;
+			});
 		}, PREVIEW_THROTTLE_MS);
 	}
 
 	async function finalizePreview(chatId: number): Promise<boolean> {
 		const state = previewState;
 		if (!state) return false;
-		await flushPreview(chatId);
+		if (state.flushTimer) {
+			clearTimeout(state.flushTimer);
+			state.flushTimer = undefined;
+		}
+		await previewFlushPromise;
 		const finalText = (state.pendingText.trim() || state.lastSentText).trim();
 		if (!finalText) {
 			await clearPreview(chatId);
 			return false;
 		}
-		if (state.mode === "draft") {
-			await callTelegram<TelegramSentMessage>("sendMessage", { chat_id: chatId, text: finalText });
+		if (state.mode === "draft" || state.messageId === undefined) {
 			await clearPreview(chatId);
+			await sendTextReply(chatId, undefined, finalText);
 			return true;
 		}
+		const [first, ...rest] = chunkParagraphs(finalText);
+		if (first !== state.lastSentText) {
+			await callTelegram("editMessageText", { chat_id: chatId, message_id: state.messageId, text: first });
+		}
 		previewState = undefined;
-		return state.messageId !== undefined;
+		for (const chunk of rest) {
+			await sendTextReply(chatId, undefined, chunk);
+		}
+		return true;
 	}
 
-	async function sendTextReply(chatId: number, _replyToMessageId: number, text: string): Promise<number | undefined> {
+	async function sendTextReply(chatId: number, _replyToMessageId: number | undefined, text: string): Promise<number | undefined> {
 		const chunks = chunkParagraphs(text);
 		let lastMessageId: number | undefined;
 		for (const chunk of chunks) {
@@ -957,7 +981,7 @@ export default function (pi: ExtensionAPI) {
 		}),
 		async execute(_toolCallId, params) {
 			if (!activeTelegramTurn) {
-				throw new Error("telegram_attach can only be used while replying to an active Telegram turn");
+				throw new Error("telegram_attach requires an active Telegram reply or synced PC turn");
 			}
 			const added: string[] = [];
 			for (const inputPath of params.paths) {
@@ -994,6 +1018,7 @@ export default function (pi: ExtensionAPI) {
 				`polling: ${pollingPromise ? "running" : "stopped"}`,
 				`active telegram turn: ${activeTelegramTurn ? "yes" : "no"}`,
 				`queued telegram turns: ${queuedTelegramTurns.length}`,
+				`conversation sync: ${syncEnabled ? "on" : "off"}`,
 			];
 			ctx.ui.notify(status.join(" | "), "info");
 		},
@@ -1012,9 +1037,38 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
+	pi.registerCommand("telegram-sync", {
+		description: "Toggle PC conversation sync to Telegram (on/off, current session only)",
+		handler: async (args, ctx) => {
+			const value = args.trim().toLowerCase();
+			if (value && value !== "on" && value !== "off") {
+				ctx.ui.notify("Usage: /telegram-sync [on|off]", "warning");
+				return;
+			}
+			const enabled = value ? value === "on" : !syncEnabled;
+			if (enabled && (!pollingPromise || !config.botToken || !config.allowedUserId)) {
+				ctx.ui.notify("Connect and pair Telegram with /telegram-connect before enabling sync.", "warning");
+				return;
+			}
+			syncEnabled = enabled;
+			if (!enabled && activeTelegramTurn?.local) {
+				await clearPreview(activeTelegramTurn.chatId);
+				activeTelegramTurn = undefined;
+				stopTypingLoop();
+			}
+			updateStatus(ctx);
+			ctx.ui.notify(`Telegram conversation sync ${enabled ? "on. New PC messages and assistant replies will be sent to your paired Telegram account." : "off."}`, "info");
+		},
+	});
+
 	pi.registerCommand("telegram-disconnect", {
 		description: "Stop the Telegram bridge in this pi session",
 		handler: async (_args, ctx) => {
+			syncEnabled = false;
+			if (activeTelegramTurn?.local) {
+				await clearPreview(activeTelegramTurn.chatId);
+				activeTelegramTurn = undefined;
+			}
 			await stopPolling();
 			updateStatus(ctx);
 		},
@@ -1052,15 +1106,33 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("agent_start", async (_event, ctx) => {
 		currentAbort = () => ctx.abort();
-		if (!activeTelegramTurn && queuedTelegramTurns.length > 0) {
+		if (!activeTelegramTurn) {
 			const nextTurn = queuedTelegramTurns.shift();
 			if (nextTurn) {
 				activeTelegramTurn = { ...nextTurn };
+			} else if (syncEnabled && pollingPromise && config.botToken && config.allowedUserId) {
+				activeTelegramTurn = { chatId: config.allowedUserId, queuedAttachments: [], local: true };
+			}
+			if (activeTelegramTurn) {
 				previewState = { mode: draftSupport === "unsupported" ? "message" : "draft", pendingText: "", lastSentText: "" };
 				startTypingLoop(ctx);
 			}
 		}
 		updateStatus(ctx);
+	});
+
+	pi.on("message_end", async (event, ctx) => {
+		if (!syncEnabled || !pollingPromise || !config.allowedUserId || event.message.role !== "user") return;
+		const text = getMessageText(event.message);
+		if (isTelegramPrompt(text)) return;
+		const hasImage = Array.isArray(event.message.content) && event.message.content.some((block) => block.type === "image");
+		const content = [text, hasImage ? "[Image attached on PC; image data is not synced.]" : ""].filter(Boolean).join("\n\n");
+		if (!content) return;
+		try {
+			await sendTextReply(config.allowedUserId, undefined, `👤 你 · PC\n\n${content}`);
+		} catch (error) {
+			updateStatus(ctx, `sync failed: ${error instanceof Error ? error.message : String(error)}`);
+		}
 	});
 
 	pi.on("message_start", async (event, _ctx) => {
@@ -1071,13 +1143,13 @@ export default function (pi: ExtensionAPI) {
 		previewState = { mode: draftSupport === "unsupported" ? "message" : "draft", pendingText: "", lastSentText: "" };
 	});
 
-	pi.on("message_update", async (event, _ctx) => {
+	pi.on("message_update", async (event, ctx) => {
 		if (!activeTelegramTurn || !isAssistantMessage(event.message)) return;
 		if (!previewState) {
 			previewState = { mode: draftSupport === "unsupported" ? "message" : "draft", pendingText: "", lastSentText: "" };
 		}
 		previewState.pendingText = getMessageText(event.message);
-		schedulePreviewFlush(activeTelegramTurn.chatId);
+		schedulePreviewFlush(activeTelegramTurn.chatId, ctx);
 	});
 
 	pi.on("agent_end", async (event, ctx) => {
@@ -1089,7 +1161,7 @@ export default function (pi: ExtensionAPI) {
 		if (!turn) return;
 
 		const assistant = extractAssistantText(event.messages);
-		if (assistant.stopReason === "aborted") {
+		if (assistant.stopReason === "aborted" && !turn.local) {
 			await clearPreview(turn.chatId);
 			return;
 		}
@@ -1099,23 +1171,18 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 
-		const finalText = assistant.text;
+		const finalText = assistant.stopReason === "aborted"
+			? [assistant.text, "Aborted."].filter(Boolean).join("\n\n")
+			: assistant.text;
 		if (previewState) {
 			previewState.pendingText = finalText ?? previewState.pendingText;
 		}
 
-		if (finalText && finalText.length <= MAX_MESSAGE_LENGTH) {
-			const finalized = await finalizePreview(turn.chatId);
-			if (!finalized && turn.queuedAttachments.length > 0 && !finalText) {
-				await sendTextReply(turn.chatId, turn.replyToMessageId, "Attached requested file(s).");
-			}
-		} else {
-			await clearPreview(turn.chatId);
-			if (finalText) {
-				await sendTextReply(turn.chatId, turn.replyToMessageId, finalText);
-			} else if (turn.queuedAttachments.length > 0) {
-				await sendTextReply(turn.chatId, turn.replyToMessageId, "Attached requested file(s).");
-			}
+		const finalized = await finalizePreview(turn.chatId);
+		if (!finalized && finalText) {
+			await sendTextReply(turn.chatId, turn.replyToMessageId, finalText);
+		} else if (!finalized && turn.queuedAttachments.length > 0) {
+			await sendTextReply(turn.chatId, turn.replyToMessageId, "Attached requested file(s).");
 		}
 
 		await sendQueuedAttachments(turn);

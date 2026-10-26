@@ -11,14 +11,22 @@ Telegram DM bridge for pi.
 From git:
 
 ```bash
-pi install git:github.com/badlogic/pi-telegram
+pi install git:github.com/johnbitcn/pi-telegram
 ```
 
 Or for a single run:
 
 ```bash
-pi -e git:github.com/badlogic/pi-telegram
+pi -e git:github.com/johnbitcn/pi-telegram
 ```
+
+For local development, install this checkout from its directory:
+
+```bash
+pi install .
+```
+
+If the upstream package is already installed, remove it first with `pi remove git:github.com/badlogic/pi-telegram`. Do not load both copies: they would register the same commands and compete for bot updates. Run `/reload` after switching packages or changing the source.
 
 ## Configure
 
@@ -78,6 +86,34 @@ The first DM user becomes the allowed Telegram user for the bridge. The extensio
 
 Chat with your bot in Telegram DMs.
 
+### Sync PC conversations to Telegram
+
+By default, only conversations started in Telegram are sent back to Telegram. To also mirror conversations started in the pi terminal, connect and pair the bot, then run in the terminal:
+
+```text
+/telegram-sync
+```
+
+Run it again to turn sync off. You can also set the state explicitly:
+
+```text
+/telegram-sync on
+/telegram-sync off
+```
+
+When enabled:
+- New terminal user messages appear in the bot DM with a `👤 你 · PC` heading and a blank line before the message body.
+- Assistant text, including intermediate replies before tool calls, uses the same streaming previews as Telegram-originated replies.
+- Telegram messages still appear in the terminal with `[telegram]`; they are not echoed back to Telegram.
+- Long messages are split to fit Telegram's message limit.
+- `/telegram-status` shows `conversation sync: on` or `off`; the terminal status label shows `telegram sync` while enabled.
+
+Sync is off by default and is not saved to config. Enable it before starting the next PC conversation. Turning it off stops the remaining output of an active PC conversation from being sent; normal Telegram replies still work. `/telegram-disconnect` also turns sync off. Restarting pi or reloading the extension resets it to off.
+
+Only new conversation text is mirrored. Existing session history, slash-command output, thinking blocks and raw tool output are not copied. PC image inputs get a text placeholder, not an image upload. Files are sent only when queued with `telegram_attach` during an active Telegram or synced PC turn.
+
+**Privacy:** while sync is on, terminal prompts and assistant text can include source code, local paths and other sensitive information. They are sent to your paired Telegram account through the bot. Turn sync off before discussing secrets. Failed sends are reported in the terminal; there is no offline backlog or automatic history replay.
+
 ### Send text
 
 Send any message in the bot DM. It is forwarded into pi with a `[telegram]` prefix.
@@ -133,6 +169,16 @@ It tries Telegram draft streaming first with `sendMessageDraft`. If that is not 
 - Replies are sent as normal Telegram messages, not quote-replies
 - Long replies are split below Telegram's 4096 character limit
 - Outbound files are sent via `telegram_attach`
+
+## Tests
+
+With Node.js 22.18 or later:
+
+```bash
+npm test
+```
+
+Tests use the built-in Node.js test runner, an isolated temporary config and a mocked Telegram API. They do not contact Telegram or change your real bot settings. The tool-schema peer dependency is stubbed in these tests; live Telegram integration is not covered.
 
 ## License
 
