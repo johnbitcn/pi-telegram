@@ -6,6 +6,7 @@ import type { ImageContent, TextContent } from "@mariozechner/pi-ai";
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
+import { formatTelegramText, type TelegramText, type TelegramTextStyle } from "./telegram-format.ts";
 
 interface TelegramConfig {
 	botToken?: string;
@@ -148,6 +149,7 @@ interface TelegramPreviewState {
 	messageId?: number;
 	pendingText: string;
 	lastSentText: string;
+	lastRenderedText?: string;
 	flushTimer?: ReturnType<typeof setTimeout>;
 }
 
@@ -159,7 +161,6 @@ interface TelegramMediaGroupState {
 const CONFIG_PATH = join(homedir(), ".pi", "agent", "telegram.json");
 const TEMP_DIR = join(homedir(), ".pi", "agent", "tmp", "telegram");
 const TELEGRAM_PREFIX = "[telegram]";
-const MAX_MESSAGE_LENGTH = 4096;
 const MAX_ATTACHMENTS_PER_TURN = 10;
 const PREVIEW_THROTTLE_MS = 750;
 const TELEGRAM_DRAFT_ID_MAX = 2_147_483_647;
@@ -217,61 +218,12 @@ function formatTokens(count: number): string {
 	return `${Math.round(count / 1000000)}M`;
 }
 
-function chunkParagraphs(text: string): string[] {
-	if (text.length <= MAX_MESSAGE_LENGTH) return [text];
-
-	const normalized = text.replace(/\r\n/g, "\n");
-	const paragraphs = normalized.split(/\n\n+/);
-	const chunks: string[] = [];
-	let current = "";
-
-	const flushCurrent = (): void => {
-		if (current.trim().length > 0) chunks.push(current);
-		current = "";
-	};
-
-	const splitLongBlock = (block: string): string[] => {
-		if (block.length <= MAX_MESSAGE_LENGTH) return [block];
-		const lines = block.split("\n");
-		const lineChunks: string[] = [];
-		let lineCurrent = "";
-		for (const line of lines) {
-			const candidate = lineCurrent.length === 0 ? line : `${lineCurrent}\n${line}`;
-			if (candidate.length <= MAX_MESSAGE_LENGTH) {
-				lineCurrent = candidate;
-				continue;
-			}
-			if (lineCurrent.length > 0) {
-				lineChunks.push(lineCurrent);
-				lineCurrent = "";
-			}
-			if (line.length <= MAX_MESSAGE_LENGTH) {
-				lineCurrent = line;
-				continue;
-			}
-			for (let i = 0; i < line.length; i += MAX_MESSAGE_LENGTH) {
-				lineChunks.push(line.slice(i, i + MAX_MESSAGE_LENGTH));
-			}
-		}
-		if (lineCurrent.length > 0) lineChunks.push(lineCurrent);
-		return lineChunks;
-	};
-
-	for (const paragraph of paragraphs) {
-		if (paragraph.length === 0) continue;
-		const parts = splitLongBlock(paragraph);
-		for (const part of parts) {
-			const candidate = current.length === 0 ? part : `${current}\n\n${part}`;
-			if (candidate.length <= MAX_MESSAGE_LENGTH) {
-				current = candidate;
-			} else {
-				flushCurrent();
-				current = part;
-			}
-		}
+class TelegramApiError extends Error {
+	readonly code?: number;
+	constructor(message: string, code?: number) {
+		super(message);
+		this.code = code;
 	}
-	flushCurrent();
-	return chunks;
 }
 
 async function readConfig(): Promise<TelegramConfig> {
@@ -352,9 +304,18 @@ export default function (pi: ExtensionAPI) {
 		});
 			const data = (await response.json()) as TelegramApiResponse<TResponse>;
 		if (!data.ok || data.result === undefined) {
-			throw new Error(data.description || `Telegram API ${method} failed`);
+			throw new TelegramApiError(data.description || `Telegram API ${method} failed`, data.error_code);
 		}
 		return data.result;
+	}
+
+	async function sendTelegramText<TResponse>(method: string, body: Record<string, unknown>, text: TelegramText): Promise<TResponse> {
+		try {
+			return await callTelegram<TResponse>(method, { ...body, text: text.text, parse_mode: "MarkdownV2" });
+		} catch (error) {
+			if (!(error instanceof TelegramApiError) || error.code !== 400 || !/can't parse entities/i.test(error.message)) throw error;
+			return callTelegram<TResponse>(method, { ...body, text: text.plainText });
+		}
 	}
 
 	async function callTelegramMultipart<TResponse>(
@@ -461,16 +422,18 @@ export default function (pi: ExtensionAPI) {
 		state.flushTimer = undefined;
 		const text = state.pendingText.trim();
 		if (!text || text === state.lastSentText) return;
-		const truncated = text.length > MAX_MESSAGE_LENGTH ? text.slice(0, MAX_MESSAGE_LENGTH) : text;
+		const chunk = formatTelegramText(text)[0];
+		if (!chunk || chunk.text === state.lastRenderedText) return;
 
 		if (draftSupport !== "unsupported") {
 			const draftId = state.draftId ?? allocateDraftId();
 			state.draftId = draftId;
 			try {
-				await callTelegram("sendMessageDraft", { chat_id: chatId, draft_id: draftId, text: truncated });
+				await sendTelegramText("sendMessageDraft", { chat_id: chatId, draft_id: draftId }, chunk);
 				draftSupport = "supported";
 				state.mode = "draft";
-				state.lastSentText = truncated;
+				state.lastSentText = text;
+				state.lastRenderedText = chunk.text;
 				return;
 			} catch {
 				draftSupport = "unsupported";
@@ -478,15 +441,17 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		if (state.messageId === undefined) {
-			const sent = await callTelegram<TelegramSentMessage>("sendMessage", { chat_id: chatId, text: truncated });
+			const sent = await sendTelegramText<TelegramSentMessage>("sendMessage", { chat_id: chatId }, chunk);
 			state.messageId = sent.message_id;
 			state.mode = "message";
-			state.lastSentText = truncated;
+			state.lastSentText = text;
+			state.lastRenderedText = chunk.text;
 			return;
 		}
-		await callTelegram("editMessageText", { chat_id: chatId, message_id: state.messageId, text: truncated });
+		await sendTelegramText("editMessageText", { chat_id: chatId, message_id: state.messageId }, chunk);
 		state.mode = "message";
-		state.lastSentText = truncated;
+		state.lastSentText = text;
+		state.lastRenderedText = chunk.text;
 	}
 
 	function schedulePreviewFlush(chatId: number, ctx: ExtensionContext): void {
@@ -515,28 +480,24 @@ export default function (pi: ExtensionAPI) {
 		}
 		if (state.mode === "draft" || state.messageId === undefined) {
 			await clearPreview(chatId);
-			await sendTextReply(chatId, undefined, finalText);
+			await sendTextReply(chatId, undefined, finalText, "markdown");
 			return true;
 		}
-		const [first, ...rest] = chunkParagraphs(finalText);
-		if (first !== state.lastSentText) {
-			await callTelegram("editMessageText", { chat_id: chatId, message_id: state.messageId, text: first });
+		const [first, ...rest] = formatTelegramText(finalText);
+		if (first.text !== state.lastRenderedText) {
+			await sendTelegramText("editMessageText", { chat_id: chatId, message_id: state.messageId }, first);
 		}
 		previewState = undefined;
 		for (const chunk of rest) {
-			await sendTextReply(chatId, undefined, chunk);
+			await sendTelegramText("sendMessage", { chat_id: chatId }, chunk);
 		}
 		return true;
 	}
 
-	async function sendTextReply(chatId: number, _replyToMessageId: number | undefined, text: string): Promise<number | undefined> {
-		const chunks = chunkParagraphs(text);
+	async function sendTextReply(chatId: number, _replyToMessageId: number | undefined, text: string, style: TelegramTextStyle = "plain"): Promise<number | undefined> {
 		let lastMessageId: number | undefined;
-		for (const chunk of chunks) {
-			const sent = await callTelegram<TelegramSentMessage>("sendMessage", {
-				chat_id: chatId,
-				text: chunk,
-			});
+		for (const chunk of formatTelegramText(text, style)) {
+			const sent = await sendTelegramText<TelegramSentMessage>("sendMessage", { chat_id: chatId }, chunk);
 			lastMessageId = sent.message_id;
 		}
 		return lastMessageId;
@@ -1129,7 +1090,7 @@ export default function (pi: ExtensionAPI) {
 		const content = [text, hasImage ? "[Image attached on PC; image data is not synced.]" : ""].filter(Boolean).join("\n\n");
 		if (!content) return;
 		try {
-			await sendTextReply(config.allowedUserId, undefined, `👤 你 · PC\n\n${content}`);
+			await sendTextReply(config.allowedUserId, undefined, `👤 你 · PC\n\n${content}`, "pc");
 		} catch (error) {
 			updateStatus(ctx, `sync failed: ${error instanceof Error ? error.message : String(error)}`);
 		}
@@ -1180,7 +1141,7 @@ export default function (pi: ExtensionAPI) {
 
 		const finalized = await finalizePreview(turn.chatId);
 		if (!finalized && finalText) {
-			await sendTextReply(turn.chatId, turn.replyToMessageId, finalText);
+			await sendTextReply(turn.chatId, turn.replyToMessageId, finalText, "markdown");
 		} else if (!finalized && turn.queuedAttachments.length > 0) {
 			await sendTextReply(turn.chatId, turn.replyToMessageId, "Attached requested file(s).");
 		}

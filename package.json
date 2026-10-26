@@ -25,5 +25,8 @@
     "@mariozechner/pi-agent-core": "*",
     "@mariozechner/pi-coding-agent": "*",
     "@sinclair/typebox": "*"
+  },
+  "dependencies": {
+    "marked": "^18.1.2"
   }
 }

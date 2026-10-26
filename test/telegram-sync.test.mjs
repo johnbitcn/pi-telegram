@@ -38,7 +38,7 @@ after(async () => {
 	await rm(home, { recursive: true, force: true });
 });
 
-async function bridge(t, { paired = true, drafts = true } = {}) {
+async function bridge(t, { paired = true, drafts = true, formatError } = {}) {
 	await writeFile(configPath, JSON.stringify({ botToken: "test-token", lastUpdateId: 0, ...(paired ? { allowedUserId: 42 } : {}) }));
 	const handlers = new Map();
 	const commands = new Map();
@@ -61,6 +61,7 @@ async function bridge(t, { paired = true, drafts = true } = {}) {
 			});
 		}
 		if (method === "sendMessageDraft" && !drafts) return Response.json({ ok: false, description: "Drafts unsupported" });
+		if (formatError && body.parse_mode === "MarkdownV2") return Response.json({ ok: false, ...formatError });
 		if (method === "sendMessage" && failNextSend) {
 			failNextSend = false;
 			throw new Error("Network unavailable");
@@ -156,9 +157,10 @@ test("sync sends PC input, intermediate replies and the final reply exactly once
 	await b.emit("message_end", { message: { role: "toolResult", content: [{ type: "text", text: "private tool output" }] } });
 	const final = await reply(b, "The fix is complete.");
 	await b.emit("agent_end", { messages: [final] });
-	assert.deepEqual(b.texts(), ["👤 你 · PC\n\nPlease check the code", "I will inspect the code.", "The fix is complete."]);
+	assert.deepEqual(b.texts(), ["*👤 你 · PC*\n\nPlease check the code", "I will inspect the code\\.", "The fix is complete\\."]);
 	assert.ok(b.calls.filter((call) => call.method === "sendMessage").every((call) => call.body.chat_id === 42));
 	assert.deepEqual(b.forwarded, []);
+	assert.ok(b.calls.filter((call) => ["sendMessage", "editMessageText"].includes(call.method)).every((call) => call.body.parse_mode === "MarkdownV2"));
 	await b.command("telegram-status");
 	assert.match(b.notifications.at(-1).message, /conversation sync: on/);
 });
@@ -190,7 +192,7 @@ test("switching off during a PC reply cancels remaining previews and final sends
 	const final = await reply(b, "Not sent yet");
 	await b.command("telegram-sync", "off");
 	await b.emit("agent_end", { messages: [final] });
-	assert.deepEqual(b.texts(), ["👤 你 · PC\n\nQuestion"]);
+	assert.deepEqual(b.texts(), ["*👤 你 · PC*\n\nQuestion"]);
 });
 
 for (const sync of [false, true]) {
@@ -236,8 +238,9 @@ test("unsupported drafts reuse the preview message instead of duplicating it", a
 	await b.emit("agent_end", { messages: [assistant(finalText)] });
 	const edit = b.calls.find((call) => call.method === "editMessageText");
 	assert.equal(b.texts()[0], "Partial reply");
-	assert.equal(edit.body.text + b.texts().slice(1).join(""), finalText);
+	assert.equal(edit.body.text + b.texts().slice(1).join(""), finalText.replace(".", "\\."));
 	assert.equal(b.calls.filter((call) => call.method === "editMessageText").length, 1);
+	assert.equal(edit.body.parse_mode, "MarkdownV2");
 });
 
 test("an in-flight preview finishes before final delivery and draft cleanup", async (t) => {
@@ -268,6 +271,7 @@ test("an in-flight preview finishes before final delivery and draft cleanup", as
 	await ending;
 	const drafts = b.calls.filter((call) => call.method === "sendMessageDraft");
 	assert.deepEqual(drafts.map((call) => call.body.text), ["Partial response", ""]);
+	assert.equal(drafts[0].body.parse_mode, "MarkdownV2");
 	assert.deepEqual(b.texts(), ["Complete response"]);
 });
 
@@ -278,6 +282,7 @@ test("send failure is reported without rejecting a user's message handler", asyn
 	b.failSend();
 	await b.emit("message_end", { message: user("Question") });
 	assert.match(b.statuses.at(-1), /sync failed: Network unavailable/);
+	assert.equal(b.calls.filter((call) => call.method === "sendMessage").length, 1, "Network failures are not retried as plain text");
 });
 
 test("PC string content and image-only messages have a visible history entry", async (t) => {
@@ -286,9 +291,55 @@ test("PC string content and image-only messages have a visible history entry", a
 	await b.command("telegram-sync", "on");
 	await b.emit("message_end", { message: { role: "user", content: "Plain string input" } });
 	await b.emit("message_end", { message: { role: "user", content: [{ type: "image", data: "private-image", mimeType: "image/png" }] } });
-	assert.equal(b.texts()[0], "👤 你 · PC\n\nPlain string input");
+	assert.equal(b.texts()[0], "*👤 你 · PC*\n\nPlain string input");
 	assert.match(b.texts()[1], /Image attached on PC/);
 	assert.ok(!b.texts()[1].includes("private-image"));
+});
+
+test("a Telegram entity parsing error falls back to readable plain text", async (t) => {
+	const b = await bridge(t, { formatError: { error_code: 400, description: "Bad Request: can't parse entities: malformed formatting" } });
+	await b.command("telegram-connect");
+	await b.command("telegram-sync", "on");
+	await pcTurn(b, "**literal PC text**", "**Formatted answer**");
+	const sends = b.calls.filter((call) => call.method === "sendMessage");
+	assert.deepEqual(sends.map((call) => [call.body.text, call.body.parse_mode]), [
+		["*👤 你 · PC*\n\n\\*\\*literal PC text\\*\\*", "MarkdownV2"],
+		["👤 你 · PC\n\n**literal PC text**", undefined],
+		["*Formatted answer*", "MarkdownV2"],
+		["Formatted answer", undefined],
+	]);
+});
+
+for (const drafts of [true, false]) {
+	test(`formatting fallback also works for ${drafts ? "draft previews" : "preview edits"}`, async (t) => {
+		const b = await bridge(t, { drafts, formatError: { error_code: 400, description: "Bad Request: can't parse entities" } });
+		t.mock.timers.enable({ apis: ["setTimeout"] });
+		await b.command("telegram-connect");
+		await b.command("telegram-sync", "on");
+		await b.emit("agent_start");
+		await reply(b, "**Partial**");
+		t.mock.timers.tick(750);
+		await setImmediate();
+		const final = assistant("**Complete**");
+		await b.emit("message_update", { message: final });
+		await b.emit("agent_end", { messages: [final] });
+		const method = drafts ? "sendMessageDraft" : "editMessageText";
+		const attempts = b.calls.filter((call) => call.method === method && call.body.text);
+		const expected = drafts ? "Partial" : "Complete";
+		assert.deepEqual(attempts.map((call) => [call.body.text, call.body.parse_mode]), [
+			[`*${expected}*`, "MarkdownV2"],
+			[expected, undefined],
+		]);
+	});
+}
+
+test("permission errors do not trigger plain-text retries", async (t) => {
+	const b = await bridge(t, { formatError: { error_code: 403, description: "Forbidden: bot was blocked by the user" } });
+	await b.command("telegram-connect");
+	await b.command("telegram-sync", "on");
+	await b.emit("message_end", { message: user("Do not retry") });
+	assert.equal(b.calls.filter((call) => call.method === "sendMessage").length, 1);
+	assert.match(b.statuses.at(-1), /bot was blocked/);
 });
 
 test("aborted turns still deliver their partial text and abort notice", async (t) => {
@@ -298,5 +349,5 @@ test("aborted turns still deliver their partial text and abort notice", async (t
 	await b.emit("agent_start");
 	const final = await reply(b, "Partial response", { stopReason: "aborted" });
 	await b.emit("agent_end", { messages: [final] });
-	assert.deepEqual(b.texts(), ["Partial response\n\nAborted."]);
+	assert.deepEqual(b.texts(), ["Partial response\n\nAborted\\."]);
 });

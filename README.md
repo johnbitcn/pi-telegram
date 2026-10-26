@@ -23,6 +23,7 @@ pi -e git:github.com/johnbitcn/pi-telegram
 For local development, install this checkout from its directory:
 
 ```bash
+npm ci --legacy-peer-deps
 pi install .
 ```
 
@@ -102,7 +103,7 @@ Run it again to turn sync off. You can also set the state explicitly:
 ```
 
 When enabled:
-- New terminal user messages appear in the bot DM with a `👤 你 · PC` heading and a blank line before the message body.
+- New terminal user messages appear in the bot DM with a bold `👤 你 · PC` heading and a blank line before the message body. The body stays literal, so source code and Markdown in your prompt are not reformatted.
 - Assistant text, including intermediate replies before tool calls, uses the same streaming previews as Telegram-originated replies.
 - Telegram messages still appear in the terminal with `[telegram]`; they are not echoed back to Telegram.
 - Long messages are split to fit Telegram's message limit.
@@ -163,6 +164,31 @@ The extension streams assistant text previews back to Telegram while pi is gener
 
 It tries Telegram draft streaming first with `sendMessageDraft`. If that is not supported for your bot, it falls back to `sendMessage` plus `editMessageText`.
 
+## Message formatting
+
+Assistant Markdown is parsed with `marked` and converted to Telegram **MarkdownV2**. It is not passed through unchanged: CommonMark `**bold**` becomes Telegram `*bold*`, for example.
+
+Supported layout:
+- Headings become bold text.
+- Bold, italic, strikethrough, inline code, fenced code blocks and links are converted to Telegram formatting.
+- Bullet, numbered and task lists keep readable markers.
+- Blockquotes use Telegram quote formatting. Nested quotes are flattened; code and links inside quotes keep their visible text without nested code/link formatting, following Telegram's entity-nesting restrictions.
+- GFM tables become pipe-separated fixed-width text, not native tables.
+- HTML is shown literally. Telegram-only extensions such as custom emoji and expandable quotes are not interpreted.
+
+PC user messages keep their exact body text and receive only the bold heading. Status and error messages remain literal. Reserved MarkdownV2 characters are escaped for their context, including code and link destinations.
+
+Drafts, message previews, edits and final replies use the same formatter. Incomplete streamed markup is escaped or closed until more content arrives. Long messages are split by rendered text length, with formatting closed and reopened in each message. Splitting does not cut UTF-16 surrogate pairs.
+
+If Telegram explicitly returns a `400` entity-parsing error, that request is retried once as readable plain text. Network, rate-limit and permission failures do not trigger this retry. There is no offline delivery queue.
+
+Official references consulted for this implementation:
+- [Formatting options and MarkdownV2](https://core.telegram.org/bots/api#formatting-options)
+- [sendMessage](https://core.telegram.org/bots/api#sendmessage)
+- [sendMessageDraft](https://core.telegram.org/bots/api#sendmessagedraft)
+- [editMessageText](https://core.telegram.org/bots/api#editmessagetext)
+- [MessageEntity](https://core.telegram.org/bots/api#messageentity)
+
 ## Notes
 
 - Only one pi session should be connected to the bot at a time
@@ -175,6 +201,7 @@ It tries Telegram draft streaming first with `sendMessageDraft`. If that is not 
 With Node.js 22.18 or later:
 
 ```bash
+npm ci --legacy-peer-deps
 npm test
 ```
 
