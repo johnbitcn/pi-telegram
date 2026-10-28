@@ -157,7 +157,7 @@ test("sync sends PC input, intermediate replies and the final reply exactly once
 	await b.emit("message_end", { message: { role: "toolResult", content: [{ type: "text", text: "private tool output" }] } });
 	const final = await reply(b, "The fix is complete.");
 	await b.emit("agent_end", { messages: [final] });
-	assert.deepEqual(b.texts(), ["*👤 你 · PC*\n\nPlease check the code", "I will inspect the code\\.", "The fix is complete\\."]);
+	assert.deepEqual(b.texts(), ["*🖥️ PC 用户*\n\n>Please check the code", "I will inspect the code\\.", "The fix is complete\\."]);
 	assert.ok(b.calls.filter((call) => call.method === "sendMessage").every((call) => call.body.chat_id === 42));
 	assert.deepEqual(b.forwarded, []);
 	assert.ok(b.calls.filter((call) => ["sendMessage", "editMessageText"].includes(call.method)).every((call) => call.body.parse_mode === "MarkdownV2"));
@@ -192,7 +192,7 @@ test("switching off during a PC reply cancels remaining previews and final sends
 	const final = await reply(b, "Not sent yet");
 	await b.command("telegram-sync", "off");
 	await b.emit("agent_end", { messages: [final] });
-	assert.deepEqual(b.texts(), ["*👤 你 · PC*\n\nQuestion"]);
+	assert.deepEqual(b.texts(), ["*🖥️ PC 用户*\n\n>Question"]);
 });
 
 for (const sync of [false, true]) {
@@ -291,7 +291,7 @@ test("PC string content and image-only messages have a visible history entry", a
 	await b.command("telegram-sync", "on");
 	await b.emit("message_end", { message: { role: "user", content: "Plain string input" } });
 	await b.emit("message_end", { message: { role: "user", content: [{ type: "image", data: "private-image", mimeType: "image/png" }] } });
-	assert.equal(b.texts()[0], "*👤 你 · PC*\n\nPlain string input");
+	assert.equal(b.texts()[0], "*🖥️ PC 用户*\n\n>Plain string input");
 	assert.match(b.texts()[1], /Image attached on PC/);
 	assert.ok(!b.texts()[1].includes("private-image"));
 });
@@ -303,8 +303,8 @@ test("a Telegram entity parsing error falls back to readable plain text", async 
 	await pcTurn(b, "**literal PC text**", "**Formatted answer**");
 	const sends = b.calls.filter((call) => call.method === "sendMessage");
 	assert.deepEqual(sends.map((call) => [call.body.text, call.body.parse_mode]), [
-		["*👤 你 · PC*\n\n\\*\\*literal PC text\\*\\*", "MarkdownV2"],
-		["👤 你 · PC\n\n**literal PC text**", undefined],
+		["*🖥️ PC 用户*\n\n>\\*\\*literal PC text\\*\\*", "MarkdownV2"],
+		["🖥️ PC 用户\n\n**literal PC text**", undefined],
 		["*Formatted answer*", "MarkdownV2"],
 		["Formatted answer", undefined],
 	]);

@@ -1090,7 +1090,7 @@ export default function (pi: ExtensionAPI) {
 		const content = [text, hasImage ? "[Image attached on PC; image data is not synced.]" : ""].filter(Boolean).join("\n\n");
 		if (!content) return;
 		try {
-			await sendTextReply(config.allowedUserId, undefined, `👤 你 · PC\n\n${content}`, "pc");
+			await sendTextReply(config.allowedUserId, undefined, `🖥️ PC 用户\n\n${content}`, "pc");
 		} catch (error) {
 			updateStatus(ctx, `sync failed: ${error instanceof Error ? error.message : String(error)}`);
 		}

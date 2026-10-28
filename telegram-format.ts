@@ -175,6 +175,7 @@ export function formatTelegramText(source: string, style: TelegramTextStyle = "m
 	if (style === "pc") {
 		const end = source.indexOf("\n");
 		doc.spans.push({ start: 0, end: end < 0 ? source.length : end, style: "bold" });
+		if (end >= 0) doc.spans.push({ start: end + 2, end: source.length, style: "quote" });
 	}
 	const messages: TelegramText[] = [];
 	for (let start = 0; start < doc.text.length;) {

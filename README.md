@@ -103,7 +103,7 @@ Run it again to turn sync off. You can also set the state explicitly:
 ```
 
 When enabled:
-- New terminal user messages appear in the bot DM with a bold `👤 你 · PC` heading and a blank line before the message body. The body stays literal, so source code and Markdown in your prompt are not reformatted.
+- New terminal user messages appear in the bot DM with a bold `🖥️ PC 用户` heading and the body in a Telegram quote block. The body stays literal, so source code and Markdown in your prompt are not reformatted; existing quote markers remain visible rather than creating nested quotes.
 - Assistant text, including intermediate replies before tool calls, uses the same streaming previews as Telegram-originated replies.
 - Telegram messages still appear in the terminal with `[telegram]`; they are not echoed back to Telegram.
 - Long messages are split to fit Telegram's message limit.
@@ -176,7 +176,7 @@ Supported layout:
 - GFM tables become pipe-separated fixed-width text, not native tables.
 - HTML is shown literally. Telegram-only extensions such as custom emoji and expandable quotes are not interpreted.
 
-PC user messages keep their exact body text and receive only the bold heading. Status and error messages remain literal. Reserved MarkdownV2 characters are escaped for their context, including code and link destinations.
+PC user messages keep their exact body text, with a bold `🖥️ PC 用户` heading and a quote block around the body. Long PC messages keep the quote formatting in each chunk. Status and error messages remain literal. Reserved MarkdownV2 characters are escaped for their context, including code and link destinations.
 
 Drafts, message previews, edits and final replies use the same formatter. Incomplete streamed markup is escaped or closed until more content arrives. Long messages are split by rendered text length, with formatting closed and reopened in each message. Splitting does not cut UTF-16 surrogate pairs.
 

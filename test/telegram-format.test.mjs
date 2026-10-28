@@ -20,11 +20,21 @@ test("all MarkdownV2 reserved characters are escaped in literal text", () => {
 	assert.equal(one(source, "plain").plainText, source);
 });
 
-test("PC headings are bold but user input stays literal, including indentation", () => {
-	const source = "👤 你 · PC\n\n    **不要加粗** C:\\path\\file.ts _value_";
+test("PC headings are bold and every body line is quoted without interpreting user input", () => {
+	const source = "🖥️ PC 用户\n\n    **不要加粗** C:\\path\\file.ts _value_\n\n> 原有引用\n```ts\nconst x = 1;\n```";
 	const result = one(source, "pc");
-	assert.equal(result.text, "*👤 你 · PC*\n\n    \\*\\*不要加粗\\*\\* C:\\\\path\\\\file\\.ts \\_value\\_");
+	assert.equal(result.text, "*🖥️ PC 用户*\n\n>    \\*\\*不要加粗\\*\\* C:\\\\path\\\\file\\.ts \\_value\\_\n>\n>\\> 原有引用\n>\\`\\`\\`ts\n>const x \\= 1;\n>\\`\\`\\`");
 	assert.equal(result.plainText, source);
+});
+
+test("long PC messages keep the body quoted across chunks without losing text or emoji", () => {
+	const source = "🖥️ PC 用户\n\n" + "段落😀\n\n".repeat(2000);
+	const messages = formatTelegramText(source, "pc");
+	assert.ok(messages.length > 1);
+	assert.ok(messages[0].text.startsWith("*🖥️ PC 用户*\n\n>"));
+	assert.ok(messages.slice(1).every((message) => message.text.startsWith(">")));
+	assert.equal(messages.map((message) => message.plainText).join(""), source);
+	assert.ok(messages.every((message) => message.plainText.length <= 4096 && message.plainText.isWellFormed()));
 });
 
 test("inline and fenced code escape only backticks and backslashes", () => {
