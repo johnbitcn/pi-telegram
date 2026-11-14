@@ -74,20 +74,22 @@ Check status:
 /telegram-status
 ```
 
-### Footer symbols
+### Footer icon
 
-The footer uses a Nerd Font Telegram icon (``, U+F2C6), followed by `⇄` when PC sync is enabled, then the current state:
+The footer shows one Nerd Font Telegram icon (``, U+F2C6). Its color carries the state, so no state word is needed:
 
-| Symbol | State |
+| Color | State |
 |---|---|
-| `●` (green) | Connected |
-| `○` (muted) | Disconnected |
-| `…` | Processing |
-| `?` (yellow) | Awaiting pairing |
-| `—` (muted) | Not configured |
-| `!` (red) | Error; the reason follows as text |
+| Green | Connected |
+| Blue | Processing; a queued count such as `+2` follows |
+| Yellow | Awaiting pairing |
+| Gray | Disconnected |
+| Red | Error; the reason follows as muted text |
+| No icon | No bot token configured |
 
-For example, ` ⇄ ●` means connected with PC sync enabled. Queued message counts remain visible while processing. Use a Nerd Font in your terminal; fonts without U+F2C6 may show a missing-glyph box. `/telegram-status` still shows text details.
+`⇄` follows the icon while PC conversation sync is enabled, for example ` ⇄` in green.
+
+Use a terminal font that includes U+F2C6, such as a Nerd Font; other fonts may show an empty box. Color is the only state channel, so a 16-color terminal or a custom theme with similar hues makes the states harder to tell apart. `/telegram-status` still shows text details.
 
 ## Pair your Telegram account
 

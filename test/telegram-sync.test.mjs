@@ -70,7 +70,7 @@ async function bridge(t, { paired = true, drafts = true, formatError } = {}) {
 	};
 	const ctx = {
 		ui: {
-			theme: { fg: (_color, text) => text },
+			theme: { fg: (color, text) => `<${color}>${text}`, },
 			setStatus: (_key, text) => statuses.push(text),
 			notify: (message, level) => notifications.push({ message, level }),
 		},
@@ -124,39 +124,39 @@ async function pcTurn(b, prompt = "PC question", answer = "PC answer") {
 	await b.emit("agent_end", { messages: [message] });
 }
 
-test("footer symbols track connection, sync and processing states", async (t) => {
+test("footer color carries the state and the icon marks sync", async (t) => {
 	const b = await bridge(t);
-	assert.equal(b.statuses.at(-1), "\uF2C6 ○");
+	assert.equal(b.statuses.at(-1), "<muted>\uF2C6");
 	await b.command("telegram-connect");
-	assert.equal(b.statuses.at(-1), "\uF2C6 ●");
+	assert.equal(b.statuses.at(-1), "<success>\uF2C6");
 	await b.command("telegram-sync", "on");
-	assert.equal(b.statuses.at(-1), "\uF2C6 ⇄ ●");
+	assert.equal(b.statuses.at(-1), "<success>\uF2C6 ⇄");
 	await b.emit("agent_start");
-	assert.equal(b.statuses.at(-1), "\uF2C6 ⇄ …");
+	assert.equal(b.statuses.at(-1), "<accent>\uF2C6 ⇄");
 	await b.emit("agent_end", { messages: [] });
-	assert.equal(b.statuses.at(-1), "\uF2C6 ⇄ ●");
+	assert.equal(b.statuses.at(-1), "<success>\uF2C6 ⇄");
 	await b.command("telegram-sync", "off");
-	assert.equal(b.statuses.at(-1), "\uF2C6 ●");
+	assert.equal(b.statuses.at(-1), "<success>\uF2C6");
 	await b.command("telegram-disconnect");
-	assert.equal(b.statuses.at(-1), "\uF2C6 ○");
+	assert.equal(b.statuses.at(-1), "<muted>\uF2C6");
 });
 
-test("footer distinguishes pairing from missing configuration", async (t) => {
+test("the footer clears itself when no bot token is configured", async (t) => {
 	const b = await bridge(t, { paired: false });
 	await b.command("telegram-connect");
-	assert.equal(b.statuses.at(-1), "\uF2C6 ?");
+	assert.equal(b.statuses.at(-1), "<warning>\uF2C6");
 	await b.command("telegram-disconnect");
 	await writeFile(configPath, "{}");
 	await b.emit("session_start");
-	assert.equal(b.statuses.at(-1), "\uF2C6 —");
+	assert.equal(b.statuses.at(-1), undefined);
 });
 
-test("footer keeps queued message counts", async (t) => {
+test("the footer appends the queued count while processing", async (t) => {
 	const b = await bridge(t);
 	await b.command("telegram-connect");
 	await b.update("First question");
 	await b.update("Second question");
-	assert.equal(b.statuses.at(-1), "\uF2C6 … +2 queued");
+	assert.equal(b.statuses.at(-1), "<accent>\uF2C6<muted> +2");
 });
 
 test("sync defaults off and requires a connected, paired bridge", async (t) => {
@@ -316,7 +316,7 @@ test("send failure is reported without rejecting a user's message handler", asyn
 	await b.command("telegram-sync", "on");
 	b.failSend();
 	await b.emit("message_end", { message: user("Question") });
-	assert.equal(b.statuses.at(-1), "\uF2C6 ⇄ ! sync failed: Network unavailable");
+	assert.equal(b.statuses.at(-1), "<error>\uF2C6 ⇄ <muted>sync failed: Network unavailable");
 	assert.equal(b.calls.filter((call) => call.method === "sendMessage").length, 1, "Network failures are not retried as plain text");
 });
 
