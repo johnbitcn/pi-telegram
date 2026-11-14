@@ -74,6 +74,21 @@ Check status:
 /telegram-status
 ```
 
+### Footer symbols
+
+The footer uses a Nerd Font Telegram icon (``, U+F2C6), followed by `⇄` when PC sync is enabled, then the current state:
+
+| Symbol | State |
+|---|---|
+| `●` (green) | Connected |
+| `○` (muted) | Disconnected |
+| `…` | Processing |
+| `?` (yellow) | Awaiting pairing |
+| `—` (muted) | Not configured |
+| `!` (red) | Error; the reason follows as text |
+
+For example, ` ⇄ ●` means connected with PC sync enabled. Queued message counts remain visible while processing. Use a Nerd Font in your terminal; fonts without U+F2C6 may show a missing-glyph box. `/telegram-status` still shows text details.
+
 ## Pair your Telegram account
 
 After token setup and `/telegram-connect`:
@@ -107,7 +122,7 @@ When enabled:
 - Assistant text, including intermediate replies before tool calls, uses the same streaming previews as Telegram-originated replies.
 - Telegram messages still appear in the terminal with `[telegram]`; they are not echoed back to Telegram.
 - Long messages are split to fit Telegram's message limit.
-- `/telegram-status` shows `conversation sync: on` or `off`; the terminal status label shows `telegram sync` while enabled.
+- `/telegram-status` shows `conversation sync: on` or `off`; the terminal status label includes `⇄` while enabled.
 
 Sync is off by default and is not saved to config. Enable it before starting the next PC conversation. Turning it off stops the remaining output of an active PC conversation from being sent; normal Telegram replies still work. `/telegram-disconnect` also turns sync off. Restarting pi or reloading the extension resets it to off.
 

@@ -265,29 +265,29 @@ export default function (pi: ExtensionAPI) {
 
 	function updateStatus(ctx: ExtensionContext, error?: string): void {
 		const theme = ctx.ui.theme;
-		const label = theme.fg("accent", syncEnabled ? "telegram sync" : "telegram");
+		const label = theme.fg("accent", syncEnabled ? "\uF2C6 ⇄" : "\uF2C6");
 		if (error) {
-			ctx.ui.setStatus("telegram", `${label} ${theme.fg("error", "error")} ${theme.fg("muted", error)}`);
+			ctx.ui.setStatus("telegram", `${label} ${theme.fg("error", "!")} ${theme.fg("muted", error)}`);
 			return;
 		}
 		if (!config.botToken) {
-			ctx.ui.setStatus("telegram", `${label} ${theme.fg("muted", "not configured")}`);
+			ctx.ui.setStatus("telegram", `${label} ${theme.fg("muted", "—")}`);
 			return;
 		}
 		if (!pollingPromise) {
-			ctx.ui.setStatus("telegram", `${label} ${theme.fg("muted", "disconnected")}`);
+			ctx.ui.setStatus("telegram", `${label} ${theme.fg("muted", "○")}`);
 			return;
 		}
 		if (!config.allowedUserId) {
-			ctx.ui.setStatus("telegram", `${label} ${theme.fg("warning", "awaiting pairing")}`);
+			ctx.ui.setStatus("telegram", `${label} ${theme.fg("warning", "?")}`);
 			return;
 		}
 		if (activeTelegramTurn || queuedTelegramTurns.length > 0) {
 			const queued = queuedTelegramTurns.length > 0 ? theme.fg("muted", ` +${queuedTelegramTurns.length} queued`) : "";
-			ctx.ui.setStatus("telegram", `${label} ${theme.fg("accent", "processing")}${queued}`);
+			ctx.ui.setStatus("telegram", `${label} ${theme.fg("accent", "…")}${queued}`);
 			return;
 		}
-		ctx.ui.setStatus("telegram", `${label} ${theme.fg("success", "connected")}`);
+		ctx.ui.setStatus("telegram", `${label} ${theme.fg("success", "●")}`);
 	}
 
 	async function callTelegram<TResponse>(

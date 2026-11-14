@@ -124,6 +124,41 @@ async function pcTurn(b, prompt = "PC question", answer = "PC answer") {
 	await b.emit("agent_end", { messages: [message] });
 }
 
+test("footer symbols track connection, sync and processing states", async (t) => {
+	const b = await bridge(t);
+	assert.equal(b.statuses.at(-1), "\uF2C6 ○");
+	await b.command("telegram-connect");
+	assert.equal(b.statuses.at(-1), "\uF2C6 ●");
+	await b.command("telegram-sync", "on");
+	assert.equal(b.statuses.at(-1), "\uF2C6 ⇄ ●");
+	await b.emit("agent_start");
+	assert.equal(b.statuses.at(-1), "\uF2C6 ⇄ …");
+	await b.emit("agent_end", { messages: [] });
+	assert.equal(b.statuses.at(-1), "\uF2C6 ⇄ ●");
+	await b.command("telegram-sync", "off");
+	assert.equal(b.statuses.at(-1), "\uF2C6 ●");
+	await b.command("telegram-disconnect");
+	assert.equal(b.statuses.at(-1), "\uF2C6 ○");
+});
+
+test("footer distinguishes pairing from missing configuration", async (t) => {
+	const b = await bridge(t, { paired: false });
+	await b.command("telegram-connect");
+	assert.equal(b.statuses.at(-1), "\uF2C6 ?");
+	await b.command("telegram-disconnect");
+	await writeFile(configPath, "{}");
+	await b.emit("session_start");
+	assert.equal(b.statuses.at(-1), "\uF2C6 —");
+});
+
+test("footer keeps queued message counts", async (t) => {
+	const b = await bridge(t);
+	await b.command("telegram-connect");
+	await b.update("First question");
+	await b.update("Second question");
+	assert.equal(b.statuses.at(-1), "\uF2C6 … +2 queued");
+});
+
 test("sync defaults off and requires a connected, paired bridge", async (t) => {
 	const b = await bridge(t);
 	await pcTurn(b);
@@ -281,7 +316,7 @@ test("send failure is reported without rejecting a user's message handler", asyn
 	await b.command("telegram-sync", "on");
 	b.failSend();
 	await b.emit("message_end", { message: user("Question") });
-	assert.match(b.statuses.at(-1), /sync failed: Network unavailable/);
+	assert.equal(b.statuses.at(-1), "\uF2C6 ⇄ ! sync failed: Network unavailable");
 	assert.equal(b.calls.filter((call) => call.method === "sendMessage").length, 1, "Network failures are not retried as plain text");
 });
 
